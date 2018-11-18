@@ -1,6 +1,8 @@
 var Service, Characteristic;
 var net = require('net');
 
+require('events').EventEmitter.prototype._maxListeners = 100;
+
 module.exports = function (homebridge) {
   Service = homebridge.hap.Service;
   Characteristic = homebridge.hap.Characteristic;
@@ -97,34 +99,38 @@ VSX.prototype.getOn = function (callback) {
 
 function setRetryConnection(me) {
 
-  if (me.ON) {
-    me.CLIENT.connect(me.PORT, me.HOST, function () {
-      me.log('Set Power On on '
-          + me.HOST + ':' + me.PORT + " input " + me.INPUT);
-      me.CLIENT.write('PO\r\n');
-      if (me.INPUT == null) {
+  try {
+    if (me.ON) {
+      me.CLIENT.connect(me.PORT, me.HOST, function () {
+        me.log('Set Power On on '
+            + me.HOST + ':' + me.PORT + " input " + me.INPUT);
+        me.CLIENT.write('PO\r\n');
+        if (me.INPUT == null) {
+          me.CLIENT.destroy();
+        }
+      });
+      me.CLIENT.on('data', function (data) {
+        me.log("Change input to " + me.INPUT);
+        me.CLIENT.write(me.INPUT + '\r\n');
         me.CLIENT.destroy();
-      }
-    });
-    me.CLIENT.on('data', function (data) {
-      me.log("Change input to " + me.INPUT);
-      me.CLIENT.write(me.INPUT + '\r\n');
-      me.CLIENT.destroy();
-      setTimeout(
-	 () => me.switchService.getCharacteristic(Characteristic.On).updateValue(false),
-	 100,
-      );
-    });
-  } else {
-    if (me.INPUT == null) {
-        me.CLIENT.connect(me.PORT, me.HOST, function () {
-        me.log('Set Power Off on ' + me.HOST + ':' + me.PORT);
-        me.CLIENT.write('PF\r\n');
-        me.CLIENT.destroy();
+        setTimeout(
+  	   () => me.switchService.getCharacteristic(Characteristic.On).updateValue(false),
+	   100,
+        );
       });
     } else {
-      me.CLIENT = null;
+      if (me.INPUT == null) {
+          me.CLIENT.connect(me.PORT, me.HOST, function () {
+          me.log('Set Power Off on ' + me.HOST + ':' + me.PORT);
+          me.CLIENT.write('PF\r\n');
+          me.CLIENT.destroy();
+        });
+      } else {
+        me.CLIENT = null;
+      }
     }
+  }
+  catch(err) {
   }
 }
 
