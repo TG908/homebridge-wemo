@@ -123,7 +123,7 @@ function setRetryConnection(me) {
         me.CLIENT.destroy();
       });
     } else {
-      me.CLIENT.destroy();	 
+      me.CLIENT = null;
     }
   }
 }
