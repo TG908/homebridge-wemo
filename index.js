@@ -1,6 +1,8 @@
 var Service, Characteristic;
 var net = require('net');
 
+require('events').EventEmitter.prototype._maxListeners = 100;
+
 module.exports = function (homebridge) {
   Service = homebridge.hap.Service;
   Characteristic = homebridge.hap.Characteristic;
@@ -13,6 +15,9 @@ function VSX(log, config) {
   this.HOST = config.ip;
   this.PORT = config.port;
   this.INPUT = config.input;
+  this.TS = null; 
+  this.CLIENT = null;
+  this.ON = null;
 }
 
 VSX.prototype.getServices = function () {
@@ -28,44 +33,60 @@ VSX.prototype.getServices = function () {
   return [this.switchService, this.informationService];
 };
 
+function getRetryConnection(me) {
+  me.CLIENT.connect(me.PORT, me.HOST, function () {
+      me.CLIENT.write('?P\r\n');
+  });
+}
+
 VSX.prototype.getOn = function (callback) {
 
   const me = this;
   me.log('Query Power Status on '
       + me.HOST + ':' + me.PORT + " input " + me.INPUT);
 
-  var client = new net.Socket();
-  client.on('error', function (ex) {
-    me.log("Received an error while communicating" + ex);
-    callback(ex)
+  if (me.INPUT != null) {
+      callback(null, false);
+      return;
+  }
+
+  me.CLIENT = new net.Socket();
+  me.TS = Date.now();
+
+  me.CLIENT.on('error', function (ex) {
+    if ( (Date.now() - me.TS) >= 1000) {
+        me.log("Received an error while communicating " + ex);
+        callback(ex);
+    } else {
+	setTimeout(getRetryConnection, 100, me);
+    }
   });
 
-  client.connect(me.PORT, me.HOST, function () {
-    client.write('?P\r\n');
-  });
+  getRetryConnection(me);
 
-  client.on('data', function (data) {
+  me.CLIENT.on('data', function (data) {
     me.log('Received data: ' + data);
 
     var str = data.toString();
 
     if (str.includes("PWR1")) {
       me.log("Power is Off");
-      client.destroy();
+      me.CLIENT.destroy();
       callback(null, false);
     } else if (str.includes("PWR0")) {
       me.log("Power is On");
       if (me.INPUT != null) {
-        client.write('?F\r\n'); // Request input
+        me.CLIENT.write('?F\r\n'); // Request input
       } else {
-        client.destroy();
+        me.CLIENT.destroy();
+        callback(null, true);
       }
     } else if (str.includes("FN")) {
       me.log("Current input is " + str);
-      client.destroy();
+      me.CLIENT.destroy();
       if (str.includes(me.INPUT)) {
         me.log("Current input matches target input of " + me.INPUT);
-        callback(null, true);
+        callback(null, false /* true */);
       } else {
         me.log("Receiver has different input selected");
         callback(null, false);
@@ -76,39 +97,65 @@ VSX.prototype.getOn = function (callback) {
   });
 };
 
+function setRetryConnection(me) {
+
+  try {
+    if (me.ON) {
+      me.CLIENT.connect(me.PORT, me.HOST, function () {
+        me.log('Set Power On on '
+            + me.HOST + ':' + me.PORT + " input " + me.INPUT);
+        me.CLIENT.write('PO\r\n');
+        if (me.INPUT == null) {
+          me.CLIENT.destroy();
+        }
+      });
+      me.CLIENT.on('data', function (data) {
+        me.log("Change input to " + me.INPUT);
+        me.CLIENT.write(me.INPUT + '\r\n');
+        me.CLIENT.destroy();
+        setTimeout(
+  	   () => me.switchService.getCharacteristic(Characteristic.On).updateValue(false),
+	   100,
+        );
+      });
+    } else {
+      if (me.INPUT == null) {
+          me.CLIENT.connect(me.PORT, me.HOST, function () {
+          me.log('Set Power Off on ' + me.HOST + ':' + me.PORT);
+          me.CLIENT.write('PF\r\n');
+          me.CLIENT.destroy();
+        });
+      } else {
+        me.CLIENT = null;
+      }
+    }
+  }
+  catch(err) {
+  }
+}
+
 VSX.prototype.setOn = function (on, callback) {
 
   const me = this;
-  var client = new net.Socket();
-  client.on('error', function (ex) {
-    me.log("Received an error while communicating" + ex);
-    callback(ex)
+  
+  me.CLIENT = new net.Socket();
+  me.TS = Date.now();
+  me.ON = on;
+
+  me.CLIENT.on('error', function (ex) {
+    if ( (Date.now() - me.TS) >= 1000) {
+        me.log("Received an error while communicating" + ex);
+        try {
+	    callback(ex);
+	} catch (error) {
+	}
+    } else {
+	setTimeout(setRetryConnection, 100, me);
+    }
   });
 
-  if (on) {
-    client.connect(me.PORT, me.HOST, function () {
-      me.log('Set Power On on '
-          + me.HOST + ':' + me.PORT + " input " + me.INPUT);
-      client.write('PO\r\n');
-      if (me.INPUT == null) {
-        client.destroy();
-      }
-    });
-    client.on('data', function (data) {
-      me.log("Change input to " + me.INPUT);
-      client.write(me.INPUT + 'FN\r\n');
-      client.destroy();
-    });
-  }
+  setRetryConnection(me);
 
-  if (!on) {
-    client.connect(me.PORT, me.HOST, function () {
-      me.log('Set Power Off on ' + me.HOST + ':' + me.PORT);
-      client.write('PF\r\n');
-      client.destroy();
-    });
-  }
   callback();
 };
-
 
